@@ -7,8 +7,17 @@ pub enum ColumnType {
 
 #[derive(Debug)]
 pub struct BTreeIndexSchema {
-  column_index: usize,
-  is_unique: bool,
+  pub column_index: usize,
+  pub is_unique: bool,
+}
+
+impl BTreeIndexSchema {
+  pub fn new(column_index: usize) -> BTreeIndexSchema {
+    BTreeIndexSchema {
+      column_index,
+      is_unique: true,
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -19,7 +28,7 @@ pub struct ColumnSchema {
 }
 
 impl ColumnSchema {
-  pub fn new(name: impl Into<String>, column_type: ColumnType) -> ColumnSchema {
+  pub fn new(name: impl Into<String>, column_type: ColumnType) -> Self {
     ColumnSchema {
       name: name.into(),
       column_type,
@@ -27,11 +36,9 @@ impl ColumnSchema {
     }
   }
 
-  fn as_nullable(self) -> ColumnSchema {
-    ColumnSchema {
-      nullable: true,
-      ..self
-    }
+  pub fn as_nullable(mut self) -> Self {
+    self.nullable = true;
+    self
   }
 }
 
@@ -43,17 +50,24 @@ pub struct TableSchema {
 }
 
 impl TableSchema {
-  pub fn new(name: impl Into<String>, columns: &[ColumnSchema]) -> TableSchema {
+  pub fn new(name: impl Into<String>, columns: &[ColumnSchema]) -> Self {
     TableSchema {
       name: name.into(),
       columns: columns.to_vec(),
       indices: Vec::new(),
     }
   }
-}
 
-impl TableSchema {
   pub fn columns(&self) -> &[ColumnSchema] {
     &self.columns
+  }
+
+  pub fn indices(&self) -> &[BTreeIndexSchema] {
+    &self.indices
+  }
+
+  pub fn with_index(mut self, index: BTreeIndexSchema) -> Self {
+    self.indices.push(index);
+    self
   }
 }

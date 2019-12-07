@@ -28,9 +28,28 @@ pub struct Row<'a>(&'a [CellData]);
 #[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
 pub struct RowNumber(usize);
 
+impl Into<usize> for RowNumber {
+  fn into(self) -> usize {
+    self.0
+  }
+}
+
 pub struct BTreeIndex<'a> {
   schema: &'a BTreeIndexSchema,
   data: BTreeMap<CellData, RowNumber>,
+}
+
+impl<'a> BTreeIndex<'a> {
+  pub fn from_schema(schema: &'a BTreeIndexSchema) -> BTreeIndex<'a> {
+    BTreeIndex {
+      schema,
+      data: BTreeMap::new(),
+    }
+  }
+
+  pub fn lookup(&self, key: CellData) -> Option<RowNumber> {
+    self.data.get(&key).cloned()
+  }
 }
 
 pub struct TableData<'a> {
@@ -41,12 +60,16 @@ pub struct TableData<'a> {
 }
 
 impl<'a> TableData<'a> {
-  fn from_schema(schema: &'a TableSchema) -> TableData<'a> {
+  pub fn from_schema(schema: &'a TableSchema) -> TableData<'a> {
     TableData {
       schema,
       data: Vec::new(),
       freed_rows: BTreeSet::new(),
-      indices: Vec::new(),
+      indices: schema
+        .indices()
+        .iter()
+        .map(BTreeIndex::from_schema)
+        .collect(),
     }
   }
 }
@@ -83,8 +106,20 @@ impl<'a> TableData<'a> {
     self.allocated_rows_len() - self.freed_rows.len()
   }
 
-  fn row_data_offset(&self, RowNumber(i): RowNumber) -> usize {
-    i * self.stride()
+  fn row_data_offset(&self, i: impl Into<usize>) -> usize {
+    i.into() * self.stride()
+  }
+
+  fn get_row_range(&self, row_number: RowNumber) -> std::ops::Range<usize> {
+    let offset = self.row_data_offset(row_number);
+    offset..offset + self.stride()
+  }
+
+  pub fn get_row(&self, row_number: RowNumber) -> Row {
+    debug_assert!(row_number.0 < self.rows_len());
+    debug_assert!(!self.freed_rows.contains(&row_number));
+
+    Row(&self.data[self.get_row_range(row_number)])
   }
 
   pub fn insert(&mut self, row: Row) -> Result<(), SchemaError> {
@@ -92,13 +127,22 @@ impl<'a> TableData<'a> {
 
     let stride = self.stride();
 
-    match self.freed_rows.iter().nth(0).cloned() {
+    let row_number = match self.freed_rows.iter().nth(0).cloned() {
       Some(row_number) => {
         let offset = self.row_data_offset(row_number);
         self.data.as_mut_slice()[offset..offset + stride].clone_from_slice(row.0);
         self.freed_rows.remove(&row_number);
+        row_number
       }
-      None => self.data.extend_from_slice(row.0),
+      None => {
+        self.data.extend_from_slice(row.0);
+        RowNumber(self.rows_len() - 1)
+      }
+    };
+
+    for index in &mut self.indices {
+      let key = row.0[index.schema.column_index].clone();
+      index.data.insert(key, row_number);
     }
 
     Ok(())
@@ -107,6 +151,14 @@ impl<'a> TableData<'a> {
   pub fn delete(&mut self, row_number: RowNumber) {
     debug_assert!(row_number.0 < self.rows_len());
     debug_assert!(!self.freed_rows.contains(&row_number));
+
+    let row = Row(&self.data[self.get_row_range(row_number)]);
+
+    for index in &mut self.indices {
+      let key = &row.0[index.schema.column_index];
+      index.data.remove(key);
+    }
+
     self.freed_rows.insert(row_number);
   }
 
@@ -255,5 +307,66 @@ mod tests {
       table_data.rows().collect::<Vec<_>>(),
       vec![Row(&[CellData::Int32(1)]), Row(&[CellData::Int32(3)])]
     );
+  }
+
+  #[test]
+  fn index_is_updated_on_insert() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
+
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(1)),
+      Some(RowNumber(0))
+    );
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(2)),
+      Some(RowNumber(1))
+    );
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(3)),
+      Some(RowNumber(2))
+    );
+  }
+
+  #[test]
+  fn index_is_updated_on_delete() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
+
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(2)),
+      Some(RowNumber(1))
+    );
+
+    table_data.delete(RowNumber(1));
+
+    assert_eq!(table_data.indices[0].lookup(CellData::Int32(2)), None);
+  }
+
+  #[test]
+  fn index_is_updated_on_truncate() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
+
+    table_data.truncate();
+
+    assert_eq!(table_data.indices[0].lookup(CellData::Int32(1)), None);
+    assert_eq!(table_data.indices[0].lookup(CellData::Int32(2)), None);
+    assert_eq!(table_data.indices[0].lookup(CellData::Int32(3)), None);
   }
 }
