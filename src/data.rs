@@ -63,6 +63,14 @@ impl<'a> TableData<'a> {
       .map(|(_, data)| Row(data))
   }
 
+  pub fn row_numbers(&'a self) -> impl Iterator<Item = RowNumber> + 'a {
+    let freed_rows = &self.freed_rows;
+
+    (0..self.allocated_rows_len())
+      .map(RowNumber)
+      .filter(move |row| !freed_rows.contains(row))
+  }
+
   fn stride(&self) -> usize {
     self.schema.columns().len()
   }
@@ -79,21 +87,27 @@ impl<'a> TableData<'a> {
     i * self.stride()
   }
 
-  pub fn insert(&mut self, row: &[CellData]) -> Result<(), SchemaError> {
-    check_row_schema(self.schema, &row)?;
+  pub fn insert(&mut self, row: Row) -> Result<(), SchemaError> {
+    check_row_schema(self.schema, &row.0)?;
 
     let stride = self.stride();
 
     match self.freed_rows.iter().nth(0).cloned() {
       Some(row_number) => {
         let offset = self.row_data_offset(row_number);
-        self.data.as_mut_slice()[offset..offset + stride].clone_from_slice(row);
+        self.data.as_mut_slice()[offset..offset + stride].clone_from_slice(row.0);
         self.freed_rows.remove(&row_number);
       }
-      None => self.data.extend_from_slice(row),
+      None => self.data.extend_from_slice(row.0),
     }
 
     Ok(())
+  }
+
+  pub fn delete(&mut self, row_number: RowNumber) {
+    debug_assert!(row_number.0 < self.rows_len());
+    debug_assert!(!self.freed_rows.contains(&row_number));
+    self.freed_rows.insert(row_number);
   }
 
   pub fn truncate(&mut self) {
@@ -122,7 +136,7 @@ mod tests {
     let mut table_data = TableData::from_schema(&table_schema);
 
     table_data
-      .insert(&mut vec![CellData::Int32(123)])
+      .insert(Row(&[CellData::Int32(123)]))
       .expect("Inserting a valid row should succeed.");
   }
 
@@ -135,7 +149,7 @@ mod tests {
     let mut table_data = TableData::from_schema(&table_schema);
 
     table_data
-      .insert(&mut vec![CellData::Null])
+      .insert(Row(&[CellData::Null]))
       .expect_err("Inserting a null into a non-nullable column should fail.");
   }
 
@@ -184,28 +198,62 @@ mod tests {
     };
 
     table_data
-      .insert(&[CellData::Int32(1), CellData::Int64(2)])
+      .insert(Row(&[CellData::Int32(1), CellData::Int64(2)]))
       .unwrap();
     table_data
-      .insert(&[CellData::Int32(3), CellData::Int64(4)])
+      .insert(Row(&[CellData::Int32(3), CellData::Int64(4)]))
       .unwrap();
 
     table_data.truncate();
 
     table_data
-      .insert(&[CellData::Int32(5), CellData::Int64(6)])
+      .insert(Row(&[CellData::Int32(5), CellData::Int64(6)]))
       .unwrap();
     table_data
-      .insert(&[CellData::Int32(7), CellData::Int64(8)])
+      .insert(Row(&[CellData::Int32(7), CellData::Int64(8)]))
       .unwrap();
 
     assert_eq!(
+      table_data.rows().collect::<Vec<_>>(),
       vec![
         Row(&[CellData::Int32(5), CellData::Int64(6)]),
         Row(&[CellData::Int32(7), CellData::Int64(8)]),
       ],
-      table_data.rows().collect::<Vec<_>>(),
       "Table should contain expected rows after insertion-truncation-insertion."
     )
+  }
+
+  #[test]
+  fn delete_marks_row_as_deleted() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)]);
+
+    let mut table_data = TableData::from_schema(&table_schema);
+    table_data.data = vec![CellData::Int32(1), CellData::Int32(2)];
+
+    table_data.delete(RowNumber(0));
+
+    assert_eq!(table_data.rows_len(), 1);
+    assert_eq!(table_data.allocated_rows_len(), 2);
+    assert_eq!(
+      table_data.rows().collect::<Vec<_>>(),
+      vec![Row(&[CellData::Int32(2)])]
+    );
+  }
+
+  #[test]
+  fn insert_delete_insert() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)]);
+
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    table_data.delete(RowNumber(1));
+    table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
+
+    assert_eq!(
+      table_data.rows().collect::<Vec<_>>(),
+      vec![Row(&[CellData::Int32(1)]), Row(&[CellData::Int32(3)])]
+    );
   }
 }
