@@ -25,6 +25,10 @@ impl CellData {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Row<'a>(&'a [CellData]);
 
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct MutRow<'a>(&'a mut [CellData]);
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
 pub struct RowNumber(usize);
 
@@ -122,7 +126,7 @@ impl<'a> TableData<'a> {
     Row(&self.data[self.get_row_range(row_number)])
   }
 
-  pub fn insert(&mut self, row: Row) -> Result<(), SchemaError> {
+  pub fn insert(&mut self, row: Row) -> Result<RowNumber, SchemaError> {
     check_row_schema(self.schema, &row.0)?;
 
     let stride = self.stride();
@@ -142,6 +146,36 @@ impl<'a> TableData<'a> {
 
     for index in &mut self.indices {
       let key = row.0[index.schema.column_index].clone();
+      index.data.insert(key, row_number);
+    }
+
+    Ok(row_number)
+  }
+
+  pub fn update(
+    &mut self,
+    row_number: RowNumber,
+    update_fn: impl Fn(MutRow),
+  ) -> Result<(), SchemaError> {
+    let row_before = self.get_row(row_number);
+    let row_range = self.get_row_range(row_number);
+
+    let old_keys = self
+      .indices
+      .iter()
+      .map(|index| row_before.0[index.schema.column_index].clone())
+      .collect::<Vec<_>>();
+
+    let row_ref = &mut self.data[row_range];
+    update_fn(MutRow(row_ref));
+
+    check_row_schema(self.schema, row_ref)?;
+
+    let updated_row = &*row_ref;
+
+    for (index, old_key) in self.indices.iter_mut().zip(old_keys.iter()) {
+      index.data.remove(old_key);
+      let key = updated_row[index.schema.column_index].clone();
       index.data.insert(key, row_number);
     }
 
@@ -293,14 +327,14 @@ mod tests {
   }
 
   #[test]
-  fn insert_delete_insert() {
+  fn insert_insert_delete_insert() {
     let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)]);
 
     let mut table_data = TableData::from_schema(&table_schema);
 
     table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
-    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
-    table_data.delete(RowNumber(1));
+    let row_number = table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    table_data.delete(row_number);
     table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
 
     assert_eq!(
@@ -340,15 +374,15 @@ mod tests {
     let mut table_data = TableData::from_schema(&table_schema);
 
     table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
-    table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
+    let row_number = table_data.insert(Row(&[CellData::Int32(2)])).unwrap();
     table_data.insert(Row(&[CellData::Int32(3)])).unwrap();
 
     assert_eq!(
       table_data.indices[0].lookup(CellData::Int32(2)),
-      Some(RowNumber(1))
+      Some(row_number)
     );
 
-    table_data.delete(RowNumber(1));
+    table_data.delete(row_number);
 
     assert_eq!(table_data.indices[0].lookup(CellData::Int32(2)), None);
   }
@@ -368,5 +402,54 @@ mod tests {
     assert_eq!(table_data.indices[0].lookup(CellData::Int32(1)), None);
     assert_eq!(table_data.indices[0].lookup(CellData::Int32(2)), None);
     assert_eq!(table_data.indices[0].lookup(CellData::Int32(3)), None);
+  }
+
+  #[test]
+  fn can_update_with_valid_value() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    let row_number = table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+    table_data
+      .update(row_number, |row| row.0[0] = CellData::Int32(2))
+      .expect("Update should succeed.");
+  }
+
+  #[test]
+  fn index_is_updated_on_update() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    let row_number = table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+
+    table_data
+      .update(row_number, |row| row.0[0] = CellData::Int32(100))
+      .unwrap();
+
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(100)),
+      Some(row_number),
+      "New value should exists in index"
+    );
+    assert_eq!(
+      table_data.indices[0].lookup(CellData::Int32(1)),
+      None,
+      "Old value should not exist in index"
+    );
+  }
+
+  #[test]
+  fn schema_is_validated_after_update() {
+    let table_schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ColumnType::Int32)])
+      .with_index(BTreeIndexSchema::new(0));
+    let mut table_data = TableData::from_schema(&table_schema);
+
+    let row_number = table_data.insert(Row(&[CellData::Int32(1)])).unwrap();
+
+    table_data
+      .update(row_number, |row| row.0[0] = CellData::Int64(101))
+      .expect_err("Changing column type in update should result in an error.");
   }
 }
