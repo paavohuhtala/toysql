@@ -1,0 +1,13 @@
+WHITESPACE = _{ " " }
+
+table_or_column_char = @{ ASCII_ALPHANUMERIC | "_" }
+table_or_column_name = @{ table_or_column_char+ }
+
+integer = @{ "-"? ~ "0" | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* )}
+literal = { integer }
+
+key_value = { table_or_column_name ~ ":" ~ literal }
+record = { ("{" ~ "}") | ("{" ~ key_value ~ ("," ~ key_value)* ~ "}") }
+
+insert_statement = { "insert" ~ table_or_column_name ~ record }
+statement = { "(" ~ (insert_statement) ~ ")" }

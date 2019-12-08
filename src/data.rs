@@ -25,6 +25,12 @@ impl CellData {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Row<'a>(&'a [CellData]);
 
+impl<'a> Row<'a> {
+  pub fn new(data: &'a [CellData]) -> Self {
+    Row(data)
+  }
+}
+
 #[repr(transparent)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct MutRow<'a>(&'a mut [CellData]);

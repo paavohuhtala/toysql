@@ -5,7 +5,7 @@ pub enum ColumnType {
   Int64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BTreeIndexSchema {
   pub column_index: usize,
   pub is_unique: bool,
@@ -42,7 +42,7 @@ impl ColumnSchema {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableSchema {
   name: String,
   columns: Vec<ColumnSchema>,
@@ -58,6 +58,10 @@ impl TableSchema {
     }
   }
 
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
   pub fn columns(&self) -> &[ColumnSchema] {
     &self.columns
   }
@@ -69,5 +73,22 @@ impl TableSchema {
   pub fn with_index(mut self, index: BTreeIndexSchema) -> Self {
     self.indices.push(index);
     self
+  }
+}
+
+#[derive(Clone)]
+pub struct DatabaseSchema {
+  tables: Vec<TableSchema>,
+}
+
+impl DatabaseSchema {
+  pub fn new(tables: &[TableSchema]) -> Self {
+    DatabaseSchema {
+      tables: tables.to_vec(),
+    }
+  }
+
+  pub fn tables(&self) -> &[TableSchema] {
+    &self.tables
   }
 }

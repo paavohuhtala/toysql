@@ -2,27 +2,24 @@ use crate::data::CellData;
 use crate::schema::{ColumnSchema, ColumnType, TableSchema};
 
 #[derive(Debug)]
-pub enum SchemaError<'a> {
+pub enum SchemaError {
   InvalidColumn {
     index: usize,
     value: CellData,
-    column: &'a ColumnSchema,
-    table: &'a TableSchema,
+    column: String,
+    table: String,
   },
   InvalidRow {
     length: usize,
-    table: &'a TableSchema,
+    table: String,
   },
 }
 
-pub fn check_row_schema<'a>(
-  table: &'a TableSchema,
-  row: &[CellData],
-) -> Result<(), SchemaError<'a>> {
+pub fn check_row_schema(table: &TableSchema, row: &[CellData]) -> Result<(), SchemaError> {
   if row.len() != table.columns().len() {
     return Err(SchemaError::InvalidRow {
       length: row.len(),
-      table,
+      table: table.name().to_string(),
     });
   }
 
@@ -37,8 +34,8 @@ pub fn check_row_schema<'a>(
       return Err(SchemaError::InvalidColumn {
         index: i,
         value: cell.clone(),
-        column,
-        table,
+        column: column.name.clone(),
+        table: table.name().to_string(),
       });
     }
   }
