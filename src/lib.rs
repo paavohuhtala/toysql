@@ -3,7 +3,8 @@ extern crate pest;
 extern crate pest_derive;
 
 pub mod check_schema;
-pub mod data;
+pub mod common;
 pub mod database;
+pub mod page;
 pub mod query_language;
 pub mod schema;

@@ -1,11 +1,11 @@
-use crate::data::CellData;
-use crate::schema::{ColumnSchema, ColumnType, TableSchema};
+use crate::common::{Value, ValueType};
+use crate::schema::{ColumnSchema, TableSchema};
 
 #[derive(Debug)]
 pub enum SchemaError {
   InvalidColumn {
     index: usize,
-    value: CellData,
+    value: Value,
     column: String,
     table: String,
   },
@@ -15,7 +15,7 @@ pub enum SchemaError {
   },
 }
 
-pub fn check_row_schema(table: &TableSchema, row: &[CellData]) -> Result<(), SchemaError> {
+pub fn check_row_schema(table: &TableSchema, row: &[Value]) -> Result<(), SchemaError> {
   if row.len() != table.columns().len() {
     return Err(SchemaError::InvalidRow {
       length: row.len(),
@@ -25,7 +25,7 @@ pub fn check_row_schema(table: &TableSchema, row: &[CellData]) -> Result<(), Sch
 
   for (i, (cell, column)) in row.iter().zip(table.columns().iter()).enumerate() {
     let is_valid = match cell.type_of() {
-      ColumnType::Null if !column.nullable => false,
+      ValueType::Null if !column.nullable => false,
       cell_type if column.column_type != cell_type => false,
       _ => true,
     };

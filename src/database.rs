@@ -1,19 +1,40 @@
-use crate::check_schema::SchemaError;
-use crate::data::{CellData, Row, RowNumber, TableData};
-use crate::query_language::{Expression, Record, Statement};
-use crate::schema::{ColumnSchema, ColumnType, DatabaseSchema, TableSchema};
 use std::collections::HashMap;
+
+use crate::check_schema::SchemaError;
+use crate::common::{Value, ValueType};
+use crate::page::{PageRowRef, Row, TablePage};
+use crate::query_language::{Expression, Record, Statement};
+use crate::schema::{ColumnSchema, DatabaseSchema, TableSchema};
 
 pub struct Table<'a> {
   schema: &'a TableSchema,
-  pages: Vec<TableData<'a>>,
+  pages: Vec<TablePage<'a>>,
+}
+
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct TableRowRef(u64);
+
+impl TableRowRef {
+  fn from_page_and_row(page: u64, row: PageRowRef) -> Self {
+    assert!(page < 2u64.pow(48));
+    TableRowRef(page << 16 | row.0 as u64)
+  }
+
+  fn page(&self) -> u64 {
+    self.0 >> 16
+  }
+
+  fn row(&self) -> PageRowRef {
+    PageRowRef((self.0 & 0xFFFF) as u16)
+  }
 }
 
 impl<'a> Table<'a> {
   pub fn new(schema: &'a TableSchema) -> Self {
     Table {
       schema,
-      pages: vec![TableData::from_schema(schema)],
+      pages: vec![TablePage::from_schema(schema)],
     }
   }
 
@@ -22,24 +43,24 @@ impl<'a> Table<'a> {
     iter.flat_map(|page| page.rows())
   }
 
-  pub fn insert(&mut self, row: Row) -> Result<RowNumber, SchemaError> {
+  pub fn insert(&mut self, row: Row) -> Result<PageRowRef, SchemaError> {
     self.pages[0].insert(row)
   }
 
-  pub fn insert_record<'b>(&'b mut self, record: Record) -> Result<RowNumber, QueryError> {
+  pub fn insert_record<'b>(&'b mut self, record: Record) -> Result<PageRowRef, QueryError> {
     let row = self.record_to_row(record)?;
     self.insert(Row::new(&row)).map_err(|err| err.into())
   }
 
-  fn expression_to_cell(column: &'a ColumnSchema, expression: &Expression) -> Option<CellData> {
+  fn expression_to_cell(column: &'a ColumnSchema, expression: &Expression) -> Option<Value> {
     match (column.column_type, expression) {
-      (ColumnType::Int32, Expression::Integer(i)) => Some(CellData::Int32(*i as i32)),
-      (ColumnType::Int64, Expression::Integer(i)) => Some(CellData::Int64(*i as i64)),
+      (ValueType::Int32, Expression::Integer(i)) => Some(Value::Int32(*i as i32)),
+      (ValueType::Int64, Expression::Integer(i)) => Some(Value::Int64(*i as i64)),
       _ => None,
     }
   }
 
-  fn record_to_row(&self, record: Record) -> Result<Vec<CellData>, QueryError> {
+  fn record_to_row(&self, record: Record) -> Result<Vec<Value>, QueryError> {
     self
       .schema
       .columns()
@@ -81,7 +102,7 @@ pub enum QueryError {
   InvalidExpressionForColumn {
     table: String,
     column: String,
-    expected: ColumnType,
+    expected: ValueType,
     expression: Expression,
   },
   SchemaError(SchemaError),
@@ -135,7 +156,7 @@ mod tests {
   fn test_insert() {
     let schema = DatabaseSchema::new(&[TableSchema::new(
       "my_cool_table",
-      &[ColumnSchema::new("cool_column", ColumnType::Int64)],
+      &[ColumnSchema::new("cool_column", ValueType::Int64)],
     )]);
 
     let mut database = Database::new(&schema);
@@ -155,8 +176,8 @@ mod tests {
         .rows()
         .collect::<Vec<_>>(),
       vec![
-        Row::new(&[CellData::Int64(12345)]),
-        Row::new(&[CellData::Int64(12346)])
+        Row::new(&[Value::Int64(12345)]),
+        Row::new(&[Value::Int64(12346)])
       ]
     );
   }

@@ -1,9 +1,4 @@
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ColumnType {
-  Null,
-  Int32,
-  Int64,
-}
+use crate::common::{Value, ValueType};
 
 #[derive(Debug, Clone)]
 pub struct BTreeIndexSchema {
@@ -23,12 +18,12 @@ impl BTreeIndexSchema {
 #[derive(Debug, Clone)]
 pub struct ColumnSchema {
   pub name: String,
-  pub column_type: ColumnType,
+  pub column_type: ValueType,
   pub nullable: bool,
 }
 
 impl ColumnSchema {
-  pub fn new(name: impl Into<String>, column_type: ColumnType) -> Self {
+  pub fn new(name: impl Into<String>, column_type: ValueType) -> Self {
     ColumnSchema {
       name: name.into(),
       column_type,
