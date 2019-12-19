@@ -7,4 +7,5 @@ pub mod common;
 pub mod database;
 pub mod page;
 pub mod query_language;
+pub mod row;
 pub mod schema;

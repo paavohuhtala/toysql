@@ -25,8 +25,8 @@ pub fn check_row_schema(table: &TableSchema, row: &[Value]) -> Result<(), Schema
 
   for (i, (cell, column)) in row.iter().zip(table.columns().iter()).enumerate() {
     let is_valid = match cell.type_of() {
-      ValueType::Null if !column.nullable => false,
-      cell_type if column.column_type != cell_type => false,
+      ValueType::UnknownNull if !column.column_type.is_nullable => false,
+      cell_type if column.column_type.base_type != cell_type => false,
       _ => true,
     };
 

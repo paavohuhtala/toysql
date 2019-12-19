@@ -1,4 +1,4 @@
-use crate::common::{Value, ValueType};
+use crate::common::{ColumnType, Value, ValueType};
 
 #[derive(Debug, Clone)]
 pub struct BTreeIndexSchema {
@@ -18,21 +18,22 @@ impl BTreeIndexSchema {
 #[derive(Debug, Clone)]
 pub struct ColumnSchema {
   pub name: String,
-  pub column_type: ValueType,
-  pub nullable: bool,
+  pub column_type: ColumnType,
 }
 
 impl ColumnSchema {
   pub fn new(name: impl Into<String>, column_type: ValueType) -> Self {
     ColumnSchema {
       name: name.into(),
-      column_type,
-      nullable: false,
+      column_type: ColumnType {
+        base_type: column_type,
+        is_nullable: false,
+      },
     }
   }
 
   pub fn as_nullable(mut self) -> Self {
-    self.nullable = true;
+    self.column_type.is_nullable = true;
     self
   }
 }

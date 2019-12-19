@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::check_schema::SchemaError;
-use crate::common::{Value, ValueType};
+use crate::common::{ColumnType, Value, ValueType};
 use crate::page::{PageRowRef, Row, TablePage};
 use crate::query_language::{Expression, Record, Statement};
 use crate::schema::{ColumnSchema, DatabaseSchema, TableSchema};
@@ -53,7 +53,7 @@ impl<'a> Table<'a> {
   }
 
   fn expression_to_cell(column: &'a ColumnSchema, expression: &Expression) -> Option<Value> {
-    match (column.column_type, expression) {
+    match (column.column_type.base_type, expression) {
       (ValueType::Int32, Expression::Integer(i)) => Some(Value::Int32(*i as i32)),
       (ValueType::Int64, Expression::Integer(i)) => Some(Value::Int64(*i as i64)),
       _ => None,
@@ -71,7 +71,7 @@ impl<'a> Table<'a> {
           None => Err(QueryError::InvalidExpressionForColumn {
             table: self.schema.name().to_string(),
             column: column.name.clone(),
-            expected: column.column_type,
+            expected: column.column_type.clone(),
             expression: (*expr).clone(),
           }),
         },
@@ -102,7 +102,7 @@ pub enum QueryError {
   InvalidExpressionForColumn {
     table: String,
     column: String,
-    expected: ValueType,
+    expected: ColumnType,
     expression: Expression,
   },
   SchemaError(SchemaError),

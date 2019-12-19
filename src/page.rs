@@ -1,9 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::Iterator;
 
+use safe_transmute;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+
 use crate::check_schema::{check_row_schema, SchemaError};
 use crate::common::{Value, ValueType};
 use crate::schema::{BTreeIndexSchema, ColumnSchema, TableSchema};
+
+const SIZE_OF_HEADER: usize = 1;
+const PAGE_SIZE: usize = 8192;
 
 #[repr(transparent)]
 #[derive(Debug, PartialEq, Eq)]
@@ -43,8 +50,15 @@ impl<'a> BTreeIndex<'a> {
 pub struct TablePage<'a> {
   schema: &'a TableSchema,
   data: Vec<Value>,
+  header: PageHeader,
+  data2: Vec<u8>,
   freed_rows: BTreeSet<PageRowRef>,
   indices: Vec<BTreeIndex<'a>>,
+}
+
+pub struct PageHeader {
+  start_of_free: usize,
+  end_of_free: usize,
 }
 
 impl<'a> TablePage<'a> {
@@ -52,6 +66,11 @@ impl<'a> TablePage<'a> {
     TablePage {
       schema,
       data: Vec::new(),
+      header: PageHeader {
+        start_of_free: 0,
+        end_of_free: PAGE_SIZE,
+      },
+      data2: vec![0u8; PAGE_SIZE],
       freed_rows: BTreeSet::new(),
       indices: schema
         .indices()
@@ -60,9 +79,7 @@ impl<'a> TablePage<'a> {
         .collect(),
     }
   }
-}
 
-impl<'a> TablePage<'a> {
   pub fn rows(&self) -> impl Iterator<Item = Row> {
     let freed_rows = &self.freed_rows;
 
@@ -108,6 +125,47 @@ impl<'a> TablePage<'a> {
     debug_assert!(!self.freed_rows.contains(&row_number));
 
     Row(&self.data[self.get_row_range(row_number)])
+  }
+
+  fn has_space_for_row_sized(&self, required_space: usize) -> bool {
+    true
+  }
+
+  fn insert_new_row(&mut self, row_data: Vec<u8>) {
+    let row_length = row_data.len();
+
+    let new_row_start = self.header.end_of_free - row_length;
+    let new_row_end = self.header.end_of_free;
+
+    let new_row_number_start = self.header.start_of_free;
+
+    (&mut self.data2[new_row_start..new_row_end]).copy_from_slice(&row_data);
+    (&mut self.data2[new_row_number_start..])
+      .write_u16::<LittleEndian>(new_row_start as u16)
+      .unwrap();
+
+    self.header.start_of_free += 2;
+    self.header.end_of_free -= row_length;
+  }
+
+  fn insert_bytes(&mut self, row_data: Vec<u8>) {
+    // TODO reuse this buffer
+    let mut offsets = Vec::new();
+    self.row_offsets(&mut offsets);
+
+    for offset in offsets.windows(2) {
+      let length = offset[1] - offset[0];
+
+      // 1 = size of header
+      if length as usize >= row_data.len() + SIZE_OF_HEADER {}
+    }
+  }
+
+  fn row_offsets(&self, target: &mut Vec<u16>) {
+    for i in (0..self.header.start_of_free as usize).step_by(2) {
+      let offset = (&self.data2[i..i + 2]).read_u16::<LittleEndian>().unwrap();
+      target.push(offset);
+    }
   }
 
   pub fn insert(&mut self, row: Row) -> Result<PageRowRef, SchemaError> {
@@ -260,12 +318,7 @@ mod tests {
       ],
     );
 
-    let mut table_data = TablePage {
-      schema: &table_schema,
-      data: vec![],
-      indices: vec![],
-      freed_rows: BTreeSet::new(),
-    };
+    let mut table_data = TablePage::from_schema(&table_schema);
 
     table_data
       .insert(Row(&[Value::Int32(1), Value::Int64(2)]))
