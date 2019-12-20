@@ -3,10 +3,11 @@ use std::iter::Iterator;
 
 use safe_transmute;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::check_schema::{check_row_schema, SchemaError};
 use crate::common::{Value, ValueType};
+use crate::row::{PackedRow, RowWriter};
 use crate::schema::{BTreeIndexSchema, ColumnSchema, TableSchema};
 
 const SIZE_OF_HEADER: usize = 1;
@@ -50,10 +51,14 @@ impl<'a> BTreeIndex<'a> {
 pub struct TablePage<'a> {
   schema: &'a TableSchema,
   data: Vec<Value>,
-  header: PageHeader,
-  data2: Vec<u8>,
   freed_rows: BTreeSet<PageRowRef>,
   indices: Vec<BTreeIndex<'a>>,
+}
+
+pub struct TablePage2<'a> {
+  schema: &'a TableSchema,
+  header: PageHeader,
+  data: Vec<u8>,
 }
 
 pub struct PageHeader {
@@ -61,16 +66,115 @@ pub struct PageHeader {
   end_of_free: usize,
 }
 
+impl<'a> TablePage2<'a> {
+  pub fn from_schema(schema: &'a TableSchema) -> TablePage2<'a> {
+    TablePage2 {
+      schema,
+      header: PageHeader {
+        start_of_free: 0,
+        end_of_free: PAGE_SIZE,
+      },
+      data: vec![0u8; PAGE_SIZE],
+    }
+  }
+
+  fn has_space_for_row_sized(&self, required_space: usize) -> bool {
+    true
+  }
+
+  fn insert_new_row(&mut self, row_data: Vec<u8>) {
+    let row_length = row_data.len();
+
+    let new_row_start = self.header.end_of_free - row_length;
+    let new_row_end = self.header.end_of_free;
+
+    let new_row_number_start = self.header.start_of_free;
+
+    (&mut self.data[new_row_start..new_row_end]).copy_from_slice(&row_data);
+
+    let mut new_row_numbers_slice = &mut self.data[new_row_number_start..];
+
+    // Row offset
+    new_row_numbers_slice
+      .write_u16::<LittleEndian>(new_row_start as u16)
+      .unwrap();
+    // Row size
+    new_row_numbers_slice
+      .write_u16::<LittleEndian>(row_data.len() as u16)
+      .unwrap();
+
+    self.header.start_of_free += 4;
+    self.header.end_of_free -= row_length;
+  }
+
+  fn insert_bytes(&mut self, row_data: Vec<u8>) {
+    for row in self.iter_rows() {
+      if row.is_in_use() {
+        continue;
+      }
+
+      // First to fit
+      // 1 = size of header
+      if row.allocated_size() >= row_data.len() + SIZE_OF_HEADER {
+        todo!();
+      }
+    }
+
+    self.insert_new_row(row_data);
+  }
+
+  fn iter_rows(&mut self) -> impl Iterator<Item = PackedRow> {
+    let (offsets, rows) = self.data.split_at_mut(self.header.end_of_free);
+
+    RowIterator {
+      entry_offset: 0,
+      remaining_entries: self.header.start_of_free / 4,
+      data: &mut self.data,
+    }
+  }
+}
+
+#[derive(Debug)]
+struct RowIterator<'a> {
+  entry_offset: usize,
+  remaining_entries: usize,
+  data: &'a mut [u8],
+}
+
+impl<'a> Iterator for RowIterator<'a> {
+  type Item = PackedRow<'a>;
+
+  fn next(&mut self) -> Option<PackedRow<'a>> {
+    if self.remaining_entries == 0 {
+      return None;
+    }
+
+    let row_offset = LittleEndian::read_u16(&self.data[self.entry_offset..]) as usize;
+    let row_length = LittleEndian::read_u16(&self.data[self.entry_offset + 2..]) as usize;
+    self.entry_offset += 4;
+    self.remaining_entries -= 1;
+
+    assert!(
+      row_offset + row_length <= self.data.len(),
+      "Expected {} + {} <= {}",
+      row_offset,
+      row_length,
+      self.data.len()
+    );
+
+    let ptr = self.data.as_mut_ptr();
+    // For this to be safe, there must be NO duplicate row offsets.
+    let row = unsafe { std::slice::from_raw_parts_mut(ptr.add(row_offset), row_length) };
+
+    return Some(PackedRow::new(row));
+  }
+}
+
 impl<'a> TablePage<'a> {
   pub fn from_schema(schema: &'a TableSchema) -> TablePage<'a> {
     TablePage {
       schema,
       data: Vec::new(),
-      header: PageHeader {
-        start_of_free: 0,
-        end_of_free: PAGE_SIZE,
-      },
-      data2: vec![0u8; PAGE_SIZE],
       freed_rows: BTreeSet::new(),
       indices: schema
         .indices()
@@ -125,47 +229,6 @@ impl<'a> TablePage<'a> {
     debug_assert!(!self.freed_rows.contains(&row_number));
 
     Row(&self.data[self.get_row_range(row_number)])
-  }
-
-  fn has_space_for_row_sized(&self, required_space: usize) -> bool {
-    true
-  }
-
-  fn insert_new_row(&mut self, row_data: Vec<u8>) {
-    let row_length = row_data.len();
-
-    let new_row_start = self.header.end_of_free - row_length;
-    let new_row_end = self.header.end_of_free;
-
-    let new_row_number_start = self.header.start_of_free;
-
-    (&mut self.data2[new_row_start..new_row_end]).copy_from_slice(&row_data);
-    (&mut self.data2[new_row_number_start..])
-      .write_u16::<LittleEndian>(new_row_start as u16)
-      .unwrap();
-
-    self.header.start_of_free += 2;
-    self.header.end_of_free -= row_length;
-  }
-
-  fn insert_bytes(&mut self, row_data: Vec<u8>) {
-    // TODO reuse this buffer
-    let mut offsets = Vec::new();
-    self.row_offsets(&mut offsets);
-
-    for offset in offsets.windows(2) {
-      let length = offset[1] - offset[0];
-
-      // 1 = size of header
-      if length as usize >= row_data.len() + SIZE_OF_HEADER {}
-    }
-  }
-
-  fn row_offsets(&self, target: &mut Vec<u16>) {
-    for i in (0..self.header.start_of_free as usize).step_by(2) {
-      let offset = (&self.data2[i..i + 2]).read_u16::<LittleEndian>().unwrap();
-      target.push(offset);
-    }
   }
 
   pub fn insert(&mut self, row: Row) -> Result<PageRowRef, SchemaError> {
@@ -488,5 +551,30 @@ mod tests {
     table_data
       .update(row_number, |row| row.0[0] = Value::Int64(101))
       .expect_err("Changing column type in update should result in an error.");
+  }
+}
+
+#[cfg(test)]
+mod page_tests {
+  use super::*;
+
+  #[test]
+  fn new_rows_are_iterable() {
+    let schema = TableSchema::new("test_table", &[ColumnSchema::new("a", ValueType::Int32)]);
+    let mut page = TablePage2::from_schema(&schema);
+
+    let mut new_row = Vec::new();
+    let mut writer = RowWriter::new(&mut new_row, &schema);
+    writer.write_header().unwrap();
+    writer.write(&1337).unwrap();
+    page.insert_bytes(new_row);
+
+    let mut new_row = Vec::new();
+    let mut writer = RowWriter::new(&mut new_row, &schema);
+    writer.write_header().unwrap();
+    writer.write(&666).unwrap();
+    page.insert_bytes(new_row);
+
+    assert_eq!(2, page.iter_rows().count());
   }
 }
